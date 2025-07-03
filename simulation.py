@@ -1,4 +1,4 @@
-# File: simulation.py (Version 2.0 - Refactored for Quality)
+# File: simulation.py (Version 2.1 - Corrected and Refactored)
 
 # Import necessary libraries
 from fenics import *
@@ -8,40 +8,26 @@ import matplotlib.tri as tri
 def define_parameters():
     """
     Groups all simulation parameters into a single dictionary.
-    This is the only place you need to edit to change simulation settings.
     """
     params = {
         # --- Geometry and Mesh ---
-        "length": 0.025,      # m
-        "thickness": 0.005,   # m
-        "nx": 50,             # Number of elements in x-direction
-        "ny": 20,             # Number of elements in y-direction
-
+        "length": 0.025, "thickness": 0.005,
+        "nx": 50, "ny": 20,
         # --- Physics and Material Properties ---
-        "rho": 4430.0,      # Density (kg/m^3)
-        "Cp": 526.0,        # Specific Heat (J/kg.K)
-        "k": 6.7,           # Thermal conductivity (W/m.K)
-        "D0": 1e-8,         # Pre-exponential factor for diffusion (m^2/s)
-        "Q": 100e3,         # Activation energy for diffusion (J/mol)
-        "R": 8.314,         # Ideal gas constant (J/mol.K)
-
+        "rho": 4430.0, "Cp": 526.0, "k": 6.7,
+        "D0": 1e-8, "Q": 100e3, "R": 8.314,
         # --- Time Stepping ---
-        "dt": 60.0,         # Time step (s)
-        "T_end": 3600.0,    # Total simulation time (s)
-
+        "dt": 60.0, "T_end": 3600.0,
         # --- Initial and Boundary Conditions ---
-        "T_initial": 25.0,    # Initial temperature in Celsius
-        "C_initial": 0.0,     # Initial concentration in Molar
-        "T_surface": 100.0,   # Surface temperature in Celsius
-        "C_surface": 5.0,     # Surface concentration in Molar
-        
+        "T_initial": 25.0, "C_initial": 0.0,
+        "T_surface": 100.0, "C_surface": 5.0,
         # --- Plotting ---
         "plot_title": "Final Sodium Concentration Profile",
         "colorbar_label": "Sodium Concentration (Molar)"
     }
     return params
 
-def setup_problem(params):
+def setup_problem(params, placeholder_T_n, placeholder_C_n):
     """
     Sets up the mesh, function spaces, boundary conditions, and variational forms.
     """
@@ -61,12 +47,12 @@ def setup_problem(params):
     bc_T = DirichletBC(V, Constant(params["T_surface"]), boundary_markers, 1)
     bc_C = DirichletBC(V, Constant(params["C_surface"]), boundary_markers, 1)
 
-    # 3. Set up the variational problems
+    # 3. Set up the variational problems using the placeholders
     T = TrialFunction(V)
     C = TrialFunction(V)
     v = TestFunction(V)
     w = TestFunction(V)
-    D = Function(V) # Diffusion coefficient as a Function
+    D = Function(V) # Diffusion coefficient
 
     F_T = (params["rho"] * params["Cp"] * T * v * dx) + \
           (params["dt"] * params["k"] * dot(grad(T), grad(v)) * dx) - \
@@ -76,10 +62,14 @@ def setup_problem(params):
           (params["dt"] * D * dot(grad(C), grad(w)) * dx) - \
           (placeholder_C_n * w * dx)
 
-    a_T, L_T_form = lhs(F_T), rhs(F_T)
-    a_C, L_C_form = lhs(F_C), rhs(F_C)
+    # We now need to assemble the LHS matrices here since they don't change
+    a_T = assemble(lhs(F_T))
+    a_C = assemble(lhs(F_C))
+    
+    # And we store the RHS forms which DO change
+    L_T_form = rhs(F_T)
+    L_C_form = rhs(F_C)
 
-    # Return a dictionary containing all the necessary setup objects
     problem_setup = {
         "mesh": mesh, "V": V, "D": D,
         "bc_T": bc_T, "bc_C": bc_C,
@@ -88,19 +78,16 @@ def setup_problem(params):
     }
     return problem_setup
 
-def run_simulation(params, problem_setup):
+def run_simulation(params, problem_setup, placeholder_T_n, placeholder_C_n):
     """
     Runs the main time-stepping loop.
     """
-    # Unpack the problem setup dictionary
     V = problem_setup["V"]
     D = problem_setup["D"]
     
-    # 1. Define initial conditions
     T_n = interpolate(Constant(params["T_initial"]), V)
     C_n = interpolate(Constant(params["C_initial"]), V)
 
-    # 2. Prepare for time-stepping
     T_solution = Function(V)
     C_solution = Function(V)
     num_steps = int(params["T_end"] / params["dt"])
@@ -113,18 +100,23 @@ def run_simulation(params, problem_setup):
         L_T = assemble(problem_setup["L_T_form"].replace({placeholder_T_n: T_n}))
         L_C = assemble(problem_setup["L_C_form"].replace({placeholder_C_n: C_n}))
         
-        # Solve Heat Equation
-        solve(problem_setup["a_T"], T_solution.vector(), L_T, problem_setup["bc_T"])
+        # Apply boundary conditions to the vectors
+        problem_setup["bc_T"].apply(L_T)
+        problem_setup["bc_C"].apply(L_C)
+
+        # Solve the linear systems
+        solve(problem_setup["a_T"], T_solution.vector(), L_T)
         
-        # Update Diffusion Coefficient
         D_expr = Expression('D0 * exp(-Q / (R * (T_k + 273.15)))',
                             degree=2, D0=params["D0"], Q=params["Q"], R=params["R"], T_k=T_solution)
         D.assign(project(D_expr, V))
 
-        # Solve Diffusion Equation
-        solve(problem_setup["a_C"], C_solution.vector(), L_C, problem_setup["bc_C"])
+        # Re-assemble the diffusion LHS matrix because 'D' has changed
+        a_C = assemble(problem_setup["a_C"].form)
+        problem_setup["bc_C"].apply(a_C)
 
-        # Update previous solutions for the next loop
+        solve(a_C, C_solution.vector(), L_C)
+
         T_n.assign(T_solution)
         C_n.assign(C_solution)
 
@@ -152,23 +144,27 @@ def plot_and_show(params, mesh, final_concentration):
     plt.gca().set_aspect('equal', adjustable='box')
     plt.show()
 
-
 if __name__ == '__main__':
-    # Define placeholder Functions for the variational forms
-    # This is a robust way to handle forms that depend on previous solutions
-    V_placeholder = FunctionSpace(RectangleMesh(Point(0,0), Point(1,1), 1, 1), 'P', 1)
-    placeholder_T_n = Function(V_placeholder)
-    placeholder_C_n = Function(V_placeholder)
-
     # --- Main workflow ---
     # 1. Get all parameters
     simulation_params = define_parameters()
 
+    # Create placeholder functions. These will be defined on the *correct* mesh later.
+    # We initialize them as None for now.
+    placeholder_T_n = None
+    placeholder_C_n = None
+    
+    # A cleaner approach to defining forms and solving. We define UFL expression
+    # for what will become our placeholders later. This avoids mesh-mismatch issues.
+    V_dummy = FiniteElement("P", triangle, 1)
+    placeholder_T_n = Coefficient(V_dummy)
+    placeholder_C_n = Coefficient(V_dummy)
+
     # 2. Set up the finite element problem
-    problem = setup_problem(simulation_params)
+    problem = setup_problem(simulation_params, placeholder_T_n, placeholder_C_n)
 
     # 3. Run the time-stepping simulation
-    final_C = run_simulation(simulation_params, problem)
+    final_C = run_simulation(simulation_params, problem, placeholder_T_n, placeholder_C_n)
 
     # 4. Generate the final plot
     plot_and_show(simulation_params, problem["mesh"], final_C)
