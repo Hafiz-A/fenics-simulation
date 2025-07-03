@@ -1,0 +1,12 @@
+# This file tells Binder to build a Conda environment
+name: fenics-environment
+
+# We use the conda-forge channel, which is the standard for scientific packages
+channels:
+  - conda-forge
+
+# List of packages to install. Binder will automatically run this with Conda.
+dependencies:
+  - fenics
+  - matplotlib
+  - notebook
