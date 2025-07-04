@@ -1,7 +1,5 @@
-# FEniCS 2D FEM - DYNAMICALLY ADJUSTABLE VERSION
-# Use command-line arguments to switch between a 'test' and 'full' run.
-# Example: python this_script.py --mode test
-#          python this_script.py --mode full
+# FEniCS 2D FEM - DYNAMICALLY ADJUSTABLE VERSION (with Medium Test)
+# Use command-line arguments to switch between 'test', 'medium-test', and 'full' runs.
 
 from fenics import *
 import numpy as np
@@ -9,20 +7,21 @@ import matplotlib.pyplot as plt
 import os
 import csv
 import matplotlib.animation as animation
-import argparse  # Import the argument parsing library
+import argparse
 
 # --- Step 1: Set up Command-Line Argument Parser ---
 parser = argparse.ArgumentParser(
     description="Run a FEniCS simulation for heat and mass transfer.",
-    formatter_class=argparse.RawTextHelpFormatter # For better help text formatting
+    formatter_class=argparse.RawTextHelpFormatter
 )
 parser.add_argument(
     '-m', '--mode',
-    choices=['test', 'full'],
+    choices=['test', 'medium-test', 'full'],
     default='test',
     help="""Set the simulation mode:
-'test' -> Runs a very short simulation with a coarse mesh (default).
-'full' -> Runs the complete, long parametric study."""
+'test'        -> A <1 minute quick check with a very coarse mesh.
+'medium-test' -> A ~3-5 minute test with a medium mesh and more runs.
+'full'        -> The complete, long parametric study (can take hours)."""
 )
 args = parser.parse_args()
 
@@ -30,14 +29,24 @@ args = parser.parse_args()
 print(f"--- Running in '{args.mode.upper()}' mode ---")
 
 if args.mode == 'test':
-    # Parameters for a quick test run
+    # Parameters for a <1 minute quick check
     nx = 30
     ny = 10
     T_end = 60.0
     surface_temperatures = [80.0, 100.0]
     NaOH_concentrations = [5.0]
-    save_interval = 15  # Save frames every 15 steps for a smooth test animation
+    save_interval = 15
     file_prefix = "TEST_"
+
+elif args.mode == 'medium-test':
+    # Parameters for a ~3-5 minute, more substantial test
+    nx = 80
+    ny = 40
+    T_end = 180.0
+    surface_temperatures = [80.0, 100.0]
+    NaOH_concentrations = [3.0, 7.0]
+    save_interval = 30  # Save frames every 30 steps
+    file_prefix = "MEDIUM_TEST_"
 
 elif args.mode == 'full':
     # Parameters for the full, original simulation
@@ -46,8 +55,8 @@ elif args.mode == 'full':
     T_end = 3600.0
     surface_temperatures = [60.0, 80.0, 100.0, 120.0]
     NaOH_concentrations = [1.0, 3.0, 5.0, 7.0, 10.0]
-    save_interval = 600  # Save frames every 600 steps (every 10 minutes)
-    file_prefix = "" # No prefix for the final results
+    save_interval = 600
+    file_prefix = ""
 
 # --- Step 3: The rest of the script uses the parameters defined above ---
 
@@ -62,12 +71,8 @@ mesh = RectangleMesh(Point(0, 0), Point(length, thickness), nx, ny)
 V = FunctionSpace(mesh, 'P', 1)
 
 # Define thermal and diffusion properties
-rho = 4430
-Cp = 526
-k = 6.7
-D0 = 1e-8
-Q = 100e3
-R = 8.314
+rho, Cp, k = 4430, 526, 6.7
+D0, Q, R = 1e-8, 100e3, 8.314
 
 # Define boundary markers
 class SurfaceBoundary(SubDomain):
@@ -76,51 +81,38 @@ class SurfaceBoundary(SubDomain):
 
 boundary_markers = MeshFunction("size_t", mesh, mesh.topology().dim() - 1)
 boundary_markers.set_all(0)
-surface = SurfaceBoundary()
-surface.mark(boundary_markers, 1)
+SurfaceBoundary().mark(boundary_markers, 1)
 
 # Create results directory
-if not os.path.exists("Results"): os.makedirs("Results")
-if not os.path.exists("CSV_Results"): os.makedirs("CSV_Results")
-if not os.path.exists("Animations"): os.makedirs("Animations")
-if not os.path.exists("Temperature_Profiles"): os.makedirs("Temperature_Profiles")
+for d in ["Results", "CSV_Results", "Animations", "Temperature_Profiles"]:
+    if not os.path.exists(d): os.makedirs(d)
 
-# Define sodium concentration threshold for layer thickness calculation
+# Define sodium concentration threshold
 concentration_threshold = 0.1
-
-# Prepare summary report
 summary_data = []
 
 # Start parametric study
 for T_surface in surface_temperatures:
     for C_surface in NaOH_concentrations:
-
         print(f"\nRunning simulation for T_surface={T_surface}°C, NaOH={C_surface}M")
 
-        # Define initial conditions
-        T_init = Constant(25.0)
-        C_init = Constant(0.0)
-
-        T = interpolate(T_init, V)
-        C = interpolate(C_init, V)
-
+        # Initial and Boundary Conditions
+        T = interpolate(Constant(25.0), V)
+        C = interpolate(Constant(0.0), V)
         bc_T = DirichletBC(V, Constant(T_surface), boundary_markers, 1)
         bc_C = DirichletBC(V, Constant(C_surface), boundary_markers, 1)
 
-        # Define variational problem for heat equation
-        Tn = Function(V); Tn.assign(T)
+        # Variational problem setup
+        Tn, Cn = Function(V), Function(V)
+        Tn.assign(T); Cn.assign(C)
         T_trial, v = TrialFunction(V), TestFunction(V)
+        C_trial, w = TrialFunction(V), TestFunction(V)
+        
         F_T = rho * Cp * (T_trial - Tn) / dt * v * dx + k * dot(grad(T_trial), grad(v)) * dx
         T_problem, T_rhs = lhs(F_T), rhs(F_T)
 
-        # Define variational problem for diffusion equation
-        Cn = Function(V); Cn.assign(C)
-        C_trial, w = TrialFunction(V), TestFunction(V)
-
-        # Prepare output arrays
-        times, T_profiles, C_profiles = [], [], []
-
         # Time-stepping loop
+        times, C_profiles = [], []
         T_solution, C_solution = Function(V), Function(V)
 
         for n in range(num_steps):
@@ -128,16 +120,13 @@ for T_surface in surface_temperatures:
             Tn.assign(T_solution)
 
             D_expr = project(D0 * exp(-Q / (R * (T_solution + 273.15))), V)
-
             F_C = (C_trial - Cn) / dt * w * dx + D_expr * dot(grad(C_trial), grad(w)) * dx
             C_problem, C_rhs = lhs(F_C), rhs(F_C)
-
             solve(C_problem == C_rhs, C_solution, bc_C)
             Cn.assign(C_solution)
 
             if (n + 1) % save_interval == 0 or n == num_steps - 1:
                 times.append((n + 1) * dt)
-                T_profiles.append(T_solution.vector().get_local())
                 C_profiles.append(C_solution.vector().get_local())
 
         # Post-processing and output generation
@@ -149,36 +138,22 @@ for T_surface in surface_temperatures:
                 max_depth = coords[i][1]
         layer_thickness = max_depth
 
-        # Use the file_prefix for all output files
+        summary_data.append([T_surface, C_surface, layer_thickness * 1000])
         base_filename = f"{file_prefix}NaOH_{C_surface}M_Temp_{T_surface}C"
         
-        # Save CSV results
-        csv_filename = f"CSV_Results/{base_filename}.csv"
-        with open(csv_filename, mode='w', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(['X (m)', 'Y (m)', 'Sodium Concentration'])
-            for i in range(len(coords)):
-                writer.writerow([coords[i][0], coords[i][1], sodium_concentration[i]])
-        print(f"Saved CSV result to {csv_filename}")
-
-        # Save temperature profiles
-        temp_csv_filename = f"Temperature_Profiles/TempProfile_{base_filename}.csv"
-        # (Code to write temp profiles is omitted for brevity but would be here)
-        
-        summary_data.append([T_surface, C_surface, layer_thickness * 1000])
-
-        # Plot final sodium concentration
+        # Plot and Animation
         import matplotlib.tri as tri
         triangulation = tri.Triangulation(coords[:, 0], coords[:, 1], mesh.cells())
+        
+        # Plot final concentration
         plt.figure(figsize=(8, 6))
         plt.tricontourf(triangulation, C_solution.vector().get_local(), 50, cmap='viridis')
         plt.colorbar(label='Sodium Concentration')
         plt.title(f'Mode: {args.mode.upper()} | NaOH: {C_surface}M, T: {T_surface}°C\nLayer Thickness: {layer_thickness * 1000:.2f} mm')
         plt.xlabel('Length (m)'); plt.ylabel('Thickness (m)')
-        filename = f"Results/{base_filename}.png"
-        plt.savefig(filename)
+        plt.savefig(f"Results/{base_filename}.png")
         plt.close()
-        print(f"Saved plot to {filename}")
+        print(f"Saved plot to Results/{base_filename}.png")
 
         # Create animation
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -189,11 +164,10 @@ for T_surface in surface_temperatures:
             ax.set_xlabel('Length (m)'); ax.set_ylabel('Thickness (m)')
             ax.set_xlim(0, length); ax.set_ylim(0, thickness)
         ani = animation.FuncAnimation(fig, update, frames=len(times), repeat=False)
-        anim_filename = f"Animations/{base_filename}.gif"
-        ani.save(anim_filename, writer='pillow', fps=5)
+        ani.save(f"Animations/{base_filename}.gif", writer='pillow', fps=5)
         plt.close()
-        print(f"Saved animation to {anim_filename}")
-
+        print(f"Saved animation to Animations/{base_filename}.gif")
+        
 # Save summary CSV
 summary_filename = f"{file_prefix}Summary_Layer_Thickness.csv"
 with open(summary_filename, mode='w', newline='') as file:
