@@ -7,6 +7,11 @@ channels:
 
 # List of packages to install. Binder will automatically run this with Conda.
 dependencies:
+  - python=3.9
   - fenics
   - matplotlib
+  - numpy
+  - pillow
   - notebook
+  - zip   # <-- Add this line
+  - tar   # <-- Add this line too (good practice)
