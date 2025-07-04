@@ -1,14 +1,11 @@
-# File: simulation.py (Version 2.1 - Corrected and Refactored)
+# File: simulation.py (Version 3.0 - Corrected and Robust Structure)
 
-# Import necessary libraries
-from fenics import *
+import fenics as fe
 import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 
 def define_parameters():
-    """
-    Groups all simulation parameters into a single dictionary.
-    """
+    """Groups all simulation parameters into a single dictionary."""
     params = {
         # --- Geometry and Mesh ---
         "length": 0.025, "thickness": 0.005,
@@ -27,96 +24,71 @@ def define_parameters():
     }
     return params
 
-def setup_problem(params, placeholder_T_n, placeholder_C_n):
-    """
-    Sets up the mesh, function spaces, boundary conditions, and variational forms.
-    """
-    # 1. Create mesh and define function space
-    mesh = RectangleMesh(Point(0, 0), Point(params["length"], params["thickness"]), params["nx"], params["ny"])
-    V = FunctionSpace(mesh, 'P', 1)
-
-    # 2. Define boundary conditions
-    class SurfaceBoundary(SubDomain):
+def create_bcs(params, V):
+    """Creates the Dirichlet boundary conditions."""
+    class SurfaceBoundary(fe.SubDomain):
         def inside(self, x, on_boundary):
-            return on_boundary and near(x[1], 0.0)
+            return on_boundary and fe.near(x[1], 0.0)
 
-    boundary_markers = MeshFunction("size_t", mesh, mesh.topology().dim() - 1, 0)
     surface = SurfaceBoundary()
-    surface.mark(boundary_markers, 1)
+    bc_T = fe.DirichletBC(V, fe.Constant(params["T_surface"]), surface)
+    bc_C = fe.DirichletBC(V, fe.Constant(params["C_surface"]), surface)
+    return bc_T, bc_C
 
-    bc_T = DirichletBC(V, Constant(params["T_surface"]), boundary_markers, 1)
-    bc_C = DirichletBC(V, Constant(params["C_surface"]), boundary_markers, 1)
-
-    # 3. Set up the variational problems using the placeholders
-    T = TrialFunction(V)
-    C = TrialFunction(V)
-    v = TestFunction(V)
-    w = TestFunction(V)
-    D = Function(V) # Diffusion coefficient
-
-    F_T = (params["rho"] * params["Cp"] * T * v * dx) + \
-          (params["dt"] * params["k"] * dot(grad(T), grad(v)) * dx) - \
-          (params["rho"] * params["Cp"] * placeholder_T_n * v * dx)
-    
-    F_C = (C * w * dx) + \
-          (params["dt"] * D * dot(grad(C), grad(w)) * dx) - \
-          (placeholder_C_n * w * dx)
-
-    # We now need to assemble the LHS matrices here since they don't change
-    a_T = assemble(lhs(F_T))
-    a_C = assemble(lhs(F_C))
-    
-    # And we store the RHS forms which DO change
-    L_T_form = rhs(F_T)
-    L_C_form = rhs(F_C)
-
-    problem_setup = {
-        "mesh": mesh, "V": V, "D": D,
-        "bc_T": bc_T, "bc_C": bc_C,
-        "a_T": a_T, "L_T_form": L_T_form,
-        "a_C": a_C, "L_C_form": L_C_form
-    }
-    return problem_setup
-
-def run_simulation(params, problem_setup, placeholder_T_n, placeholder_C_n):
+def run_simulation(params, V, T_n, C_n, bc_T, bc_C):
     """
-    Runs the main time-stepping loop.
+    Defines variational forms and runs the main time-stepping loop.
     """
-    V = problem_setup["V"]
-    D = problem_setup["D"]
+    # 1. Define trial and test functions from the common FunctionSpace V
+    T = fe.TrialFunction(V)
+    C = fe.TrialFunction(V)
+    v = fe.TestFunction(V)
+    w = fe.TestFunction(V)
     
-    T_n = interpolate(Constant(params["T_initial"]), V)
-    C_n = interpolate(Constant(params["C_initial"]), V)
+    # Define the Function that will hold the changing diffusion coefficient
+    D = fe.Function(V)
 
-    T_solution = Function(V)
-    C_solution = Function(V)
+    # 2. Define the variational forms (equations)
+    # Using T_n and C_n which are defined on the same FunctionSpace as T, v, etc.
+    # This correctly avoids any mesh mismatches.
+    dt = fe.Constant(params["dt"])
+    F_T = (params["rho"] * params["Cp"] * T * v * fe.dx) + \
+          (dt * params["k"] * fe.dot(fe.grad(T), fe.grad(v)) * fe.dx) - \
+          (params["rho"] * params["Cp"] * T_n * v * fe.dx)
+    
+    a_T, L_T = fe.lhs(F_T), fe.rhs(F_T)
+
+    # For diffusion, the LHS (a_C) changes every step because D changes.
+    # We define the full form and will re-assemble 'a_C' inside the loop.
+    F_C = (C * w * fe.dx) + (dt * D * fe.dot(fe.grad(C), fe.grad(w)) * fe.dx) - (C_n * w * fe.dx)
+    a_C_form = fe.lhs(F_C)
+    L_C_form = fe.rhs(F_C)
+
+    # 3. Prepare for time-stepping
+    T_solution = fe.Function(V)
+    C_solution = fe.Function(V)
     num_steps = int(params["T_end"] / params["dt"])
 
     print("Starting simulation...")
     for n in range(num_steps):
         current_time = (n + 1) * params["dt"]
 
-        # Assemble the right-hand side vectors using the previous step's solutions
-        L_T = assemble(problem_setup["L_T_form"].replace({placeholder_T_n: T_n}))
-        L_C = assemble(problem_setup["L_C_form"].replace({placeholder_C_n: C_n}))
+        # --- Solve Heat Equation ---
+        fe.solve(a_T == L_T, T_solution, bc_T)
         
-        # Apply boundary conditions to the vectors
-        problem_setup["bc_T"].apply(L_T)
-        problem_setup["bc_C"].apply(L_C)
+        # --- Update Diffusion Coefficient based on new temperature ---
+        D_expr = fe.Expression('D0 * exp(-Q / (R * (T_k + 273.15)))',
+                               degree=2, D0=params["D0"], Q=params["Q"], R=params["R"], T_k=T_solution)
+        D.assign(fe.project(D_expr, V))
 
-        # Solve the linear systems
-        solve(problem_setup["a_T"], T_solution.vector(), L_T)
-        
-        D_expr = Expression('D0 * exp(-Q / (R * (T_k + 273.15)))',
-                            degree=2, D0=params["D0"], Q=params["Q"], R=params["R"], T_k=T_solution)
-        D.assign(project(D_expr, V))
+        # --- Solve Diffusion Equation ---
+        # Re-assemble the LHS matrix because D has changed
+        a_C = fe.assemble(a_C_form)
+        L_C = fe.assemble(L_C_form)
+        bc_C.apply(a_C, L_C)
+        fe.solve(a_C, C_solution.vector(), L_C)
 
-        # Re-assemble the diffusion LHS matrix because 'D' has changed
-        a_C = assemble(problem_setup["a_C"].form)
-        problem_setup["bc_C"].apply(a_C)
-
-        solve(a_C, C_solution.vector(), L_C)
-
+        # --- Update solutions for the next step ---
         T_n.assign(T_solution)
         C_n.assign(C_solution)
 
@@ -127,9 +99,7 @@ def run_simulation(params, problem_setup, placeholder_T_n, placeholder_C_n):
     return C_solution
 
 def plot_and_show(params, mesh, final_concentration):
-    """
-    Generates and displays the final plot.
-    """
+    """Generates and displays the final plot."""
     print("Plotting final concentration.")
     coords = mesh.coordinates()
     triangulation = tri.Triangulation(coords[:, 0], coords[:, 1], mesh.cells())
@@ -147,24 +117,21 @@ def plot_and_show(params, mesh, final_concentration):
 if __name__ == '__main__':
     # --- Main workflow ---
     # 1. Get all parameters
-    simulation_params = define_parameters()
+    params = define_parameters()
 
-    # Create placeholder functions. These will be defined on the *correct* mesh later.
-    # We initialize them as None for now.
-    placeholder_T_n = None
-    placeholder_C_n = None
-    
-    # A cleaner approach to defining forms and solving. We define UFL expression
-    # for what will become our placeholders later. This avoids mesh-mismatch issues.
-    V_dummy = FiniteElement("P", triangle, 1)
-    placeholder_T_n = Coefficient(V_dummy)
-    placeholder_C_n = Coefficient(V_dummy)
+    # 2. Set up the core FEniCS objects in the main scope
+    mesh = fe.RectangleMesh(fe.Point(0, 0), fe.Point(params["length"], params["thickness"]), params["nx"], params["ny"])
+    V = fe.FunctionSpace(mesh, 'P', 1)
 
-    # 2. Set up the finite element problem
-    problem = setup_problem(simulation_params, placeholder_T_n, placeholder_C_n)
+    # 3. Create functions to hold the solutions from the previous time step (t_n)
+    T_n = fe.interpolate(fe.Constant(params["T_initial"]), V)
+    C_n = fe.interpolate(fe.Constant(params["C_initial"]), V)
 
-    # 3. Run the time-stepping simulation
-    final_C = run_simulation(simulation_params, problem, placeholder_T_n, placeholder_C_n)
+    # 4. Create the boundary conditions
+    bc_T, bc_C = create_bcs(params, V)
 
-    # 4. Generate the final plot
-    plot_and_show(simulation_params, problem["mesh"], final_C)
+    # 5. Run the simulation by passing the necessary objects
+    final_C = run_simulation(params, V, T_n, C_n, bc_T, bc_C)
+
+    # 6. Generate the final plot
+    plot_and_show(params, mesh, final_C)
