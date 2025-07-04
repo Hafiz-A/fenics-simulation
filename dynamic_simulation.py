@@ -1,4 +1,4 @@
-# FEniCS 2D FEM - DYNAMICALLY ADJUSTABLE VERSION (with ValueError Fix)
+# FEniCS 2D FEM - DYNAMICALLY ADJUSTABLE VERSION (Verified Clean)
 
 from fenics import *
 import numpy as np
@@ -15,12 +15,12 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
     '-m', '--mode',
-    choices=['test', 'medium-test', 'long-test', 'full'],
+    choices=['test', 'medium-test', 'hq-10min', 'full'],
     default='test',
     help="""Set the simulation mode:
 'test'        -> A <1 min quick check with a very coarse mesh.
 'medium-test' -> A ~3-5 min test with a medium mesh and multiple runs.
-'long-test'   -> A single, high-quality simulation taking ~10 mins.
+'hq-10min'    -> A single, high-quality simulation targeting a ~10-min runtime.
 'full'        -> The complete, long parametric study (can take hours, not for Binder)."""
 )
 args = parser.parse_args()
@@ -36,22 +36,17 @@ elif args.mode == 'medium-test':
     nx, ny, T_end = 80, 40, 180.0
     surface_temperatures, NaOH_concentrations = [80.0, 100.0], [3.0, 7.0]
     save_interval, file_prefix = 30, "MEDIUM_TEST_"
-elif args.mode == 'long-test':
-    # --- THIS LINE IS NOW FIXED ---
-    nx, ny, T_end = 120, 120, 600.0  # Fine mesh, 10 min sim time
-    # --- END OF FIX ---
-    # Run only a single, pre-defined case
-    surface_temperatures = [100.0]
-    NaOH_concentrations = [5.0]
-    save_interval = 20
-    file_prefix = "LONG_TEST_"
+elif args.mode == 'hq-10min':
+    nx, ny = 200, 200
+    T_end = 1200.0
+    surface_temperatures, NaOH_concentrations = [110.0], [7.0]
+    save_interval, file_prefix = 30, "HQ_10MIN_"
 elif args.mode == 'full':
     nx, ny, T_end = 150, 150, 3600.0
-    surface_temperatures = [60.0, 80.0, 100.0, 120.0]
-    NaOH_concentrations = [1.0, 3.0, 5.0, 7.0, 10.0]
+    surface_temperatures, NaOH_concentrations = [60.0, 80.0, 100.0, 120.0], [1.0, 3.0, 5.0, 7.0, 10.0]
     save_interval, file_prefix = 600, ""
 
-# --- Step 3: The rest of the script is unchanged and uses the parameters defined above ---
+# --- Step 3: The rest of the script ---
 
 # General simulation parameters
 length, thickness, dt = 0.025, 0.005, 1.0
@@ -84,6 +79,7 @@ summary_data = []
 for T_surface in surface_temperatures:
     for C_surface in NaOH_concentrations:
         print(f"\nRunning simulation for T_surface={T_surface}°C, NaOH={C_surface}M")
+        print(f"Mesh size: {nx}x{ny}, Steps: {num_steps}")
 
         # Initial and Boundary Conditions
         T, C = interpolate(Constant(25.0), V), interpolate(Constant(0.0), V)
@@ -126,27 +122,24 @@ for T_surface in surface_temperatures:
 
         base_filename = f"{file_prefix}NaOH_{C_surface}M_Temp_{T_surface}C"
         
-        # Save final concentration CSV
+        # Save CSVs
         csv_filename = f"CSV_Results/{base_filename}.csv"
         with open(csv_filename, mode='w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(['X (m)', 'Y (m)', 'Final Sodium Concentration'])
-            for i in range(len(coords)):
-                writer.writerow([coords[i][0], coords[i][1], final_concentration[i]])
+            for i in range(len(coords)): writer.writerow([coords[i][0], coords[i][1], final_concentration[i]])
         print(f"Saved Concentration CSV to {csv_filename}")
 
-        # Save final temperature CSV
         temp_csv_filename = f"Temperature_Profiles/{base_filename}.csv"
         with open(temp_csv_filename, mode='w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(['X (m)', 'Y (m)', 'Final Temperature (C)'])
-            for i in range(len(coords)):
-                writer.writerow([coords[i][0], coords[i][1], final_temperature[i]])
+            for i in range(len(coords)): writer.writerow([coords[i][0], coords[i][1], final_temperature[i]])
         print(f"Saved Temperature CSV to {temp_csv_filename}")
         
         # Plotting and Animation
         import matplotlib.tri as tri
-        triangulation = tri.Triangulation(coords[:, 0], coords[i, 1], mesh.cells())
+        triangulation = tri.Triangulation(coords[:, 0], coords[:, 1], mesh.cells())
         
         plt.figure(figsize=(8, 6))
         plt.tricontourf(triangulation, final_concentration, 50, cmap='viridis')
@@ -165,7 +158,7 @@ for T_surface in surface_temperatures:
             ax.set_xlabel('Length (m)'); ax.set_ylabel('Thickness (m)')
             ax.set_xlim(0, length); ax.set_ylim(0, thickness)
         ani = animation.FuncAnimation(fig, update, frames=len(times), repeat=False)
-        ani.save(f"Animations/{base_filename}.gif", writer='pillow', fps=5)
+        ani.save(f"Animations/{base_filename}.gif", writer='pillow', fps=10)
         plt.close()
         print(f"Saved animation to Animations/{base_filename}.gif")
         
