@@ -1,4 +1,4 @@
-# FEniCS 2D FEM - DYNAMICALLY ADJUSTABLE VERSION (with a 10-minute 'long-test')
+# FEniCS 2D FEM - DYNAMICALLY ADJUSTABLE VERSION (with ValueError Fix)
 
 from fenics import *
 import numpy as np
@@ -37,13 +37,13 @@ elif args.mode == 'medium-test':
     surface_temperatures, NaOH_concentrations = [80.0, 100.0], [3.0, 7.0]
     save_interval, file_prefix = 30, "MEDIUM_TEST_"
 elif args.mode == 'long-test':
-    # This mode is designed to run for ~10 minutes and produce one high-quality result.
-    nx, ny, T_end = 120, 120  # Fine mesh for good visual results
-    T_end = 600.0           # Longer simulation time (10 minutes)
+    # --- THIS LINE IS NOW FIXED ---
+    nx, ny, T_end = 120, 120, 600.0  # Fine mesh, 10 min sim time
+    # --- END OF FIX ---
     # Run only a single, pre-defined case
     surface_temperatures = [100.0]
     NaOH_concentrations = [5.0]
-    save_interval = 20      # Save a frame every 20 steps for a smooth animation
+    save_interval = 20
     file_prefix = "LONG_TEST_"
 elif args.mode == 'full':
     nx, ny, T_end = 150, 150, 3600.0
@@ -80,14 +80,13 @@ for d in ["Results", "CSV_Results", "Animations", "Temperature_Profiles"]:
 concentration_threshold = 0.1
 summary_data = []
 
-# Parametric study loop (for 'long-test', this will only loop once)
+# Parametric study loop
 for T_surface in surface_temperatures:
     for C_surface in NaOH_concentrations:
         print(f"\nRunning simulation for T_surface={T_surface}°C, NaOH={C_surface}M")
 
         # Initial and Boundary Conditions
-        T = interpolate(Constant(25.0), V)
-        C = interpolate(Constant(0.0), V)
+        T, C = interpolate(Constant(25.0), V), interpolate(Constant(0.0), V)
         bc_T = DirichletBC(V, Constant(T_surface), boundary_markers, 1)
         bc_C = DirichletBC(V, Constant(C_surface), boundary_markers, 1)
 
@@ -116,6 +115,8 @@ for T_surface in surface_temperatures:
         # Post-processing and output generation
         coords = mesh.coordinates()
         final_concentration = C_solution.vector().get_local()
+        final_temperature = T_solution.vector().get_local()
+        
         max_depth = 0.0
         for i in range(len(coords)):
             if final_concentration[i] >= concentration_threshold and coords[i][1] > max_depth:
@@ -127,12 +128,25 @@ for T_surface in surface_temperatures:
         
         # Save final concentration CSV
         csv_filename = f"CSV_Results/{base_filename}.csv"
-        # ... (CSV saving code omitted for brevity but is present in the full script)
+        with open(csv_filename, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['X (m)', 'Y (m)', 'Final Sodium Concentration'])
+            for i in range(len(coords)):
+                writer.writerow([coords[i][0], coords[i][1], final_concentration[i]])
         print(f"Saved Concentration CSV to {csv_filename}")
 
+        # Save final temperature CSV
+        temp_csv_filename = f"Temperature_Profiles/{base_filename}.csv"
+        with open(temp_csv_filename, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['X (m)', 'Y (m)', 'Final Temperature (C)'])
+            for i in range(len(coords)):
+                writer.writerow([coords[i][0], coords[i][1], final_temperature[i]])
+        print(f"Saved Temperature CSV to {temp_csv_filename}")
+        
         # Plotting and Animation
         import matplotlib.tri as tri
-        triangulation = tri.Triangulation(coords[:, 0], coords[:, 1], mesh.cells())
+        triangulation = tri.Triangulation(coords[:, 0], coords[i, 1], mesh.cells())
         
         plt.figure(figsize=(8, 6))
         plt.tricontourf(triangulation, final_concentration, 50, cmap='viridis')
