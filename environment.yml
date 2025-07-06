@@ -11,6 +11,7 @@ dependencies:
   - fenics
   - matplotlib
   - numpy
+  - scipy # <-- Add this line
   - pillow
   - notebook
   - zip   # <-- Add this line
