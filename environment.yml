@@ -16,3 +16,4 @@ dependencies:
   - notebook
   - zip   # <-- Add this line
   - tar   # <-- Add this line too (good practice)
+  - plotly # <-- Add this line
